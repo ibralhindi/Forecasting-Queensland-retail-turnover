@@ -1,0 +1,552 @@
+---
+title: "Retail Project"
+author: "Ibrahim Al-Hindi - 24112488"
+date: '2022-05-20'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+
+library(fpp3)
+library(kableExtra)
+library(readabs)
+```
+
+```{r}
+# Load data
+set.seed(24112488)
+myseries <- aus_retail %>%
+  # Remove discontinued series
+  filter(!(`Series ID` %in% c("A3349561R","A3349883F","A3349499L","A3349902A",
+                        "A3349588R","A3349763L","A3349372C","A3349450X",
+                        "A3349679W","A3349378T","A3349767W","A3349451A"))) %>%
+  # Select a series at random
+  filter(`Series ID` == sample(`Series ID`,1))
+```
+
+This report examines the Queensland clothing industry turnover data and how best to apply both ARIMA and ETS models to it to produce forecasts. The best model from each method will be arrived at by analyzing metrics such as the AICc and studying plots of the forecasts they produce. The forecasts from both models will then be studied and compared in reference to real future data in an attempt to ascertain which of the two methods is superior with regards to this data set.
+
+# Statistical features of the original data
+
+Graphs of the data will be created. A time plot of the data will first be produced
+
+```{r}
+myseries %>%
+  autoplot(Turnover) +
+  labs(
+    title = "Queensland clothing industry turnover",
+    y = "Turnover ($M)"
+  )
+```
+
+We can see an increasing trend in the data that appears to level off post-2000. We also observe annual seasonality that is increasing in magnitude over time.
+
+Next we will create a seasonal plot of the data
+
+```{r}
+myseries %>%
+  gg_season(Turnover) +
+  labs(
+    title = "Seasonal plot: Queensland clothing industry turnover",
+    y = "Turnover ($M)"
+  )
+```
+
+We can observe that turnover peaks in December and falls to a trough in February; this is likely a result of Christmas shopping. The level of turnover throughout the years has been steadily increasing over time, as well as the magnitude of increase from November to December, likely due to the increasing commercialization and marketing during the holidays.
+
+A subseries plot will be created
+
+```{r}
+myseries %>%
+  gg_subseries(Turnover) +
+  labs(
+    title = "Subseries plot: Queensland clothing industry turnover",
+    y = "Turnover ($M)"
+  )
+```
+
+The mean turnover over the years is similar between the months, with the exception of December and February which are noticeably the maximum and minimum, respectively. Turnover has been increasing steadily in all months since 1980 until the late 2000's when a sharp decline occurs likely due to the Global Financial Crisis, after which turnover increases once again.
+
+The summary statistics of the data is as follows
+
+```{r}
+tibble(
+  Mean = mean(myseries$Turnover),
+  `Std Deviation` = sd(myseries$Turnover),
+  Median = median(myseries$Turnover),
+  Minimum = min(myseries$Turnover),
+  Maximum = max(myseries$Turnover)
+) %>%
+  kable(digits = 2, caption = "Queensland clothing industry turnover summary statistics ($M)") %>%
+  kable_styling(bootstrap_options = "striped", full_width = FALSE)
+```
+
+```{r}
+ggplot(myseries, aes(x = Turnover)) +
+  geom_histogram(aes(y = ..density..), color = "white", fill = "red", alpha = 0.7) +
+  geom_density(color = "blue", size = 1) +
+  labs(
+    title = "Queensland clothing industry turnover distribution",
+    x = "Turnover ($M)"
+  )
+```
+
+From the summary statistics table we can see that Turnover has a wide spread with a mean of 133.62M and a standard deviation of 70.44M. The histogram and density plot displays a right skewed bi-modal distribution.
+
+# ETS
+
+The time plot above shows annual seasonality that is increasing in magnitude over time and is therefore multiplicative. It also displays a potential trend that seems to be leveling off post-2000. Therefore we can expect our ETS model to include multiplicative seasonality and perhaps a (potentially damped) trend.
+
+Therefore models with multiplicative seasonality as well as damped and non-damped additive trends will be created. However, the absolute presence of a trend is not affirmed from the plot so a model with no trend will also be trialed. Furthermore, since the seasonality is multiplicative, we can only use multiplicative errors.
+
+Therefore, the following three models will be examined:
+
+- Multiplicative errors, additive trend, multiplicative seasonality. M-A-M
+- Multiplicative errors, additive damped trend, multiplicative seasonality. M-Ad-M
+- Multiplicative errors, no trend, multiplicative seasonality. M-N-M
+
+The models will be obtained using a training set of all but the last 24 months of the data. The models will then be tested on the final two years of the data. The AICc of the models will be compared, as well as the training and test sets measures of accuracy.
+
+```{r, echo = TRUE}
+# Training set is all but the last 24 months of the data
+train <- myseries %>%
+  slice(1:(n() - 24))
+
+ets_fit <- train %>%
+  model(
+    MAM = ETS(Turnover ~ error("M") + trend("A") + season("M")),
+    MAdM = ETS(Turnover ~ error("M") + trend("Ad") + season("M")),
+    MNM = ETS(Turnover ~ error("M") + trend("N") + season("M"))
+  )
+```
+
+```{r}
+glance(ets_fit) %>%
+  select(.model, AICc) %>%
+  arrange(AICc) %>%
+  kable() %>%
+  kable_styling(bootstrap_options = "striped", full_width = FALSE)
+
+accuracy(ets_fit) %>%
+  kable() %>%
+  kable_styling(bootstrap_options = "striped", full_width = FALSE)
+
+ets_fc <- ets_fit %>%
+  forecast(h = "2 years")
+
+ets_fc %>%
+  accuracy(myseries) %>%
+  kable() %>%
+  kable_styling(bootstrap_options = "striped", full_width = FALSE)
+```
+
+Based on the AICc value and training set diagnostics (RMSE, MAE, MASE), the M-Ad-M model is the best model. However, when looking at the test set diagnostics, the M-N-M model performs better.
+
+Therefore we will narrow our choices down to M-Ad-M and M-N-M. The parameter estimates of these models are:
+
+```{r}
+ets_fit %>%
+  select(State, Industry, MNM, MAdM) %>%
+  tidy() %>%
+  kable() %>%
+  kable_styling(bootstrap_options = "striped", full_width = FALSE)
+```
+
+We will examine the residuals of both models by making residuals plots. A Ljung-Box test will also be performed to formally determine whether the residuals are white noise. For the M-N-M model, the degrees of freedom chosen is 14 as there are 15 parameters in the model less one of the multiplicative seasonal parameters as once you know all but one of the seasonal parameters then the last one can be calculated since they all need to add up to one; for the M-Ad-M model, the degrees of freedom chosen is 17 as there are 18 parameters in the model. For both models, the lag is set at 2 times the seasonal period, which is 24.
+
+```{r}
+ets_fit %>%
+  select(State, Industry, MAdM) %>%
+  gg_tsresiduals() +
+  labs(title = "M-Ad-M Residual Diagnostics")
+```
+
+```{r}
+ets_fit %>%
+  select(State, Industry, MNM) %>%
+  gg_tsresiduals() +
+  labs(title = "M-N-M Residual Diagnostics")
+```
+
+The residuals of both models are quite similar and seem to have a zero mean, a constant variance, and are normally distributed. The ACF of the M-Ad-M model presents spikes at lags 4, 10, and 16 that are more significant than the same lags in the M-N-M model, but not by much. Both ACFs present a large spike at lag 12, indicating that some seasonal information has not been fully captured by the model. Nonetheless, this should not significantly impact the model.
+
+```{r, echo = TRUE}
+ets_fit %>%
+  select(State, Industry, MNM) %>%
+  augment() %>%
+  features(.innov, ljung_box, lag = 24, dof = 14) %>%
+  kable(format.args = lst(scientific = TRUE)) %>%
+  kable_styling(bootstrap_options = "striped", full_width = FALSE)
+
+ets_fit %>%
+  select(State, Industry, MAdM) %>%
+  augment() %>%
+  features(.innov, ljung_box, lag = 24, dof = 17) %>%
+  kable(format.args = lst(scientific = TRUE)) %>%
+  kable_styling(bootstrap_options = "striped", full_width = FALSE)
+```
+
+The null hypothesis is that the data is white noise. The tests for both models show that the residuals are significantly different from white noise and are in fact correlated. However, this seems to be caused by the significant spike at lag 12 and will not significantly impact the model. Therefore, it is appropriate to proceed with either of these models.
+
+Between the two models, the M-Ad-M model performs better on AICc and training set diagnostics, while the M-N-M model performs slightly better on the residuals ACF plot. The M-N-M model also performs better on the test set diagnostics. However, the test set is constrained to only those two years so the test diagnostics might have favored the M-N-M model specifically for those two years simply by chance, and those two years might not be representative of the entire data. Cross validation might be useful here to see the performance of the models across the entire data set. If the entirety of the data is observed from the original plot, one can clearly observe a trend that has been leveling off in more recent years, but the trend is present generally over the entirety of the data. For this reason as well as having a lower AICc value and better training set diagnostics (since the test set diagnostics are constrained to only the last two years), the chosen ETS model is the **M-Ad-M** model with multiplicative errors, damped additive trend, and multiplicative seasonality.
+
+The forecasts produced by this model with 80% prediction intervals are
+
+```{r}
+ets_fc %>%
+  hilo(level = 80) %>% 
+  filter(.model == "MAdM") %>%
+  kable() %>%
+  kable_styling(bootstrap_options = "striped", full_width = FALSE)
+```
+
+A plot of the forecasts with prediction intervals overlayed with the actual data will be produced
+
+```{r}
+ets_fc %>%
+  filter(.model == "MAdM") %>%
+  autoplot(myseries, level = 80) +
+  labs(
+    title = "M-Ad-M / Actual",
+    y = "Turnover ($M)"
+  )
+```
+
+# ARIMA
+
+We will remind ourselves of the original time plot of the data
+
+```{r}
+myseries %>%
+  autoplot(Turnover) +
+  labs(
+    title = "Queensland clothing industry turnover",
+    y = "Turnover ($M)"
+  )
+```
+
+The data is non-stationary due to the non-constant variance, the seasonality, and the trend and increasing level. We will now attempt to make the data stationary before we can proceed with our ARIMA modeling.
+
+First, we need to stabilize the variance, so a transformation is required. To accomplish this, we will utilize a Box-Cox transformation with the lambda chosen using the Guerrero method
+
+```{r, echo = TRUE}
+myseries %>%
+  features(Turnover, features = guerrero) %>%
+  select(lambda_guerrero) %>%
+  kable() %>%
+  kable_styling(bootstrap_options = "striped", full_width = FALSE)
+```
+
+Since the lambda produced by the Guerrero method is almost 0, we can simply use a log transformation.
+
+```{r}
+myseries %>%
+  autoplot(log(Turnover)) +
+  labs(
+    title = "Queensland clothing industry log turnover",
+    y = "Log Turnover ($M)"
+  )
+```
+
+The variance of the data has now been stabilized. We will now take a seasonal difference to remove the seasonality
+
+```{r}
+myseries %>%
+  autoplot(difference(log(Turnover), 12)) +
+  labs(
+    title = "Seasonally differenced Queensland clothing industry log turnover",
+    y = "Log Turnover ($M)"
+  )
+```
+
+Finally, we will take a first difference
+
+```{r}
+myseries %>%
+  autoplot(difference(difference(log(Turnover), 12))) +
+  labs(
+    title = "Double differenced Queensland clothing industry log turnover",
+    y = "Log Turnover ($M)"
+  )
+```
+
+The data now appears to be stationary.
+
+We will more objectively assess our differencing steps by using a unit root test, specifically the KPSS test. The null hypothesis of this test is that the data is stationary.
+
+```{r, echo = TRUE}
+myseries %>%
+  features(log(Turnover), unitroot_kpss) %>%
+  kable() %>%
+  kable_styling(bootstrap_options = "striped", full_width = FALSE)
+```
+
+As the p-value is lower than 0.01, the data is not stationary and must be differenced. We will now test whether and how many seasonal differences and/or first differences are required
+
+```{r, echo = TRUE}
+# Number of seasonal differences required
+myseries %>%
+  features(log(Turnover), lst(unitroot_kpss, unitroot_nsdiffs)) %>%
+  kable() %>%
+  kable_styling(bootstrap_options = "striped", full_width = FALSE)
+
+# Number of first differences required
+myseries %>%
+  features(difference(log(Turnover), 12), lst(unitroot_kpss, unitroot_ndiffs)) %>%
+  kable() %>%
+  kable_styling(bootstrap_options = "striped", full_width = FALSE)
+```
+
+One seasonal difference followed by one first difference is required, confirming our process originally.
+
+```{r, echo = TRUE}
+myseries %>%
+  features(difference(difference(log(Turnover), 12)), unitroot_kpss) %>%
+  kable() %>%
+  kable_styling(bootstrap_options = "striped", full_width = FALSE)
+```
+
+The data is now stationary.
+
+The ACF and PACF of the modified data will be analyzed to help to determine the non-seasonal components (p,d,q) and the seasonal components (P,D,Q) of the ARIMA model. The d and D are both 1 due to the differencing done; the p, q, P, and Q are to be determined
+
+```{r}
+myseries %>%
+  gg_tsdisplay(difference(difference(log(Turnover), 12)), plot_type = "partial", lag_max = 36) +
+  labs(title = "Stationary data ACF and PACF plots")
+```
+
+To determine the non-seasonal components, both the ACF and the PACF can be considered to be sinusoidal. If we set q to 0, p is 5 as the last significant spike in the PACF is at lag 5. If we set p to 0, q is also 5 as the last significant spike in the ACF is at lag 5.
+
+For the seasonal components, both the ACF and PACF seasonal lags can be considered exponentially decaying. If we set Q to 0, P is 3 as the last significant seasonal spike in the PACF is at lag 36. If we set P to 0, Q is 3 as the last significant seasonal spike in the ACF is at lag 36. No constant is needed as the data seems to be centered on 0.
+
+The above models as well as some combinations between them will be fit. In addition, an automatic model and an automatic model with less restraints will also be fit:
+
+- (5,1,0)(3,1,0)
+- (0,1,5)(3,1,0)
+- (5,1,0)(0,1,3)
+- (0,1,5)(0,1,3)
+- (2,1,2)(2,1,2)
+- (1,1,1)(1,1,1)
+- (2,1,2)(1,1,1)
+- Auto-generated ARIMA
+- Auto-generated ARIMA with fewer restrictions
+
+```{r, echo = TRUE}
+arima_fit <- train %>%
+  model(
+    a510310 = ARIMA(log(Turnover) ~ 0 + pdq(5, 1, 0) + PDQ(3, 1, 0)),
+    a015310 = ARIMA(log(Turnover) ~ 0 + pdq(0, 1, 5) + PDQ(3, 1, 0)),
+    a510013 = ARIMA(log(Turnover) ~ 0 + pdq(5, 1, 0) + PDQ(0, 1, 3)),
+    a015013 = ARIMA(log(Turnover) ~ 0 + pdq(0, 1, 5) + PDQ(0, 1, 3)),
+    a212212 = ARIMA(log(Turnover) ~ 0 + pdq(2, 1, 2) + PDQ(2, 1, 2)),
+    a111111 = ARIMA(log(Turnover) ~ 0 + pdq(1, 1, 1) + PDQ(1, 1, 1)),
+    a212111 = ARIMA(log(Turnover) ~ 0 + pdq(2, 1, 2) + PDQ(1, 1, 1)),
+    auto = ARIMA(log(Turnover)),
+    auto_best = ARIMA(log(Turnover), stepwise = FALSE, approx = FALSE)
+  )
+```
+
+```{r}
+glance(arima_fit) %>%
+  select(.model, AICc) %>%
+  arrange(AICc) %>%
+  kable() %>%
+  kable_styling(bootstrap_options = "striped", full_width = FALSE)
+
+accuracy(arima_fit) %>%
+  kable() %>%
+  kable_styling(bootstrap_options = "striped", full_width = FALSE)
+
+arima_fc <- arima_fit %>%
+  forecast(h = "2 years")
+
+arima_fc %>%
+  accuracy(myseries) %>%
+  kable() %>%
+  kable_styling(bootstrap_options = "striped", full_width = FALSE)
+
+arima_fit %>%
+  select(auto_best) %>%
+  report()
+
+arima_best <-
+  arima_fit %>%
+  select(State, Industry, auto_best)
+```
+
+Based on the AICc values, the most effective model is the auto_best model. The RMSE and MASE on the training set diagnostics are the best in the (5,1,0)(0,1,3), but all models score closely. While for the test set, The RMSE and MASE are the best in the (5,1,0)(3,1,0), but once again all the models are close to each other. The (5,1,0)(0,1,3) and (5,1,0)(3,1,0) are both complex models with a p term of 5 and a P term of 3 or a Q term of 3. Therefore, since the training and test diagnostics are already very close for the simpler auto_best model, as well having the lowest AICc, the auto_best model with **(1,1,2)(0,1,2)** is the chosen ARIMA model.
+
+The parameter estimates of the model are
+
+```{r}
+arima_best %>%
+  tidy() %>%
+  kable() %>%
+  kable_styling(bootstrap_options = "striped", full_width = FALSE)
+```
+
+The residuals of the model will be analyzed using residual plots
+
+```{r}
+gg_tsresiduals(arima_best) +
+  labs(title = "(1,1,2)(0,1,2) Residual Diagnostics")
+```
+
+The residuals look acceptable with a mean of 0, a constant variance, and a normal distribution. The ACF plot appears fine with the exception of a significant spike at lag 13 and lag 23, indicating lurking seasonal information not captured in the model. These do not invalidate the model as they are not very significant and are far back enough to not have a large impact on the forecasts and predictions.
+
+A Ljung-Box test will be done to more formally ascertain if the residuals are significantly different from white noise. 5 degrees of freedom are chosen since there are 5 estimated parameters in the model. The lag is set at two times the seasonal period, which is 24.
+
+```{r, echo = TRUE}
+augment(arima_best) %>%
+  features(.innov, ljung_box, lag = 24, dof = 5) %>%
+  kable() %>%
+  kable_styling(bootstrap_options = "striped", full_width = FALSE)
+```
+
+The test shows that the residuals are significantly different from white noise and some information is uncaptured by the model. This will be the case with most models as it is very difficult to capture all or most of the information affecting a forecast. Therefore, the model can still be used to produce forecasts and prediction intervals.
+
+The forecasts produced by this model with 80% prediction intervals are
+
+```{r}
+arima_fc %>%
+  hilo(level = 80) %>%
+  filter(.model == "auto_best") %>%
+  kable() %>%
+  kable_styling(bootstrap_options = "striped", full_width = FALSE)
+```
+
+
+A plot of the forecasts with prediction intervals overlayed with the actual data will be produced
+
+```{r}
+arima_fc %>%
+  filter(.model == "auto_best") %>%
+  autoplot(myseries, level = 80) +
+  labs(
+    title = "(1,1,2)(0,1,2) / Actual",
+    y = "Turnover ($M)"
+  )
+```
+
+# ETS vs ARIMA
+
+The selected ETS and ARIMA models will now be compared to see which performs better. This will be done by comparing the RMSE produced by each model when the forecasts are generated and applied against the test set of the last 24 months.
+
+```{r, echo = TRUE}
+# Fit best ETS and ARIMA models
+both_fit <- train %>%
+  model(
+    ETS = ETS(Turnover ~ error("M") + trend("Ad") + season("M")),
+    ARIMA = ARIMA(log(Turnover) ~ 0 + pdq(1, 1, 2) + PDQ(0, 1, 2))
+  )
+```
+
+```{r}
+both_fc <- both_fit %>%
+  forecast(h = "2 years")
+
+both_fc %>%
+  accuracy(myseries) %>%
+  kable() %>%
+  kable_styling(bootstrap_options = "striped", full_width = FALSE)
+```
+
+
+Based on the RMSE (and all the other measures), the ETS is the better model. Cross-validation can also be used to increase the confidence in that conclusion as the current test size is not big. The AICc cannot be used as a comparison tool between different classes of models.
+
+# Forecasting beyond the data
+
+The two models will now be fit on the full data set and forecasts for two years past the end of the data will be produced
+
+```{r, echo = TRUE}
+full_fit <- myseries %>%
+  model(
+    ETS = ETS(Turnover ~ error("M") + trend("Ad") + season("M")),
+    ARIMA = ARIMA(log(Turnover) ~ 0 + pdq(1, 1, 2) + PDQ(0, 1, 2))
+  )
+```
+
+The forecasts produced by both models with 80% prediction intervals are
+
+```{r}
+full_fc <- full_fit %>%
+  forecast(h = "2 years")
+
+full_fc %>%
+  hilo(level = 80) %>%
+  kable() %>%
+  kable_styling(bootstrap_options = "striped", full_width = FALSE)
+
+full_fc %>%
+  autoplot(myseries, level = 80, alpha = 0.6) +
+  labs(
+    title = "2 Year forecasts for the Queensland clothing industry turnover",
+    y = "Turnover ($M)"
+  )
+```
+
+# Comparison with up-to-date data
+
+The two year forecasts produced above will now be compared with the real data.
+
+```{r}
+# Obtain up-to-date data
+real <- read_abs("8501.0", tables = "11") %>%
+  filter(series_id == "A3349477X") %>%
+  select(value, series_id, date) %>%
+  rename(
+    Turnover = value,
+    `Series ID` = series_id,
+    Month = date
+  ) %>%
+  mutate(
+    State = "Queensland",
+    Industry = "Clothing retailing"
+  ) %>%
+  as_tsibble(index = Month, key = c("State", "Industry")) %>%
+  filter(year(Month) < 2021)
+```
+
+To determine which model performed better versus the real data, the RMSE of both models will be assessed.
+
+```{r}
+full_fc %>%
+  accuracy(real) %>%
+  kable() %>%
+  kable_styling(bootstrap_options = "striped", full_width = FALSE)
+```
+
+Based on the RMSE (and all other measures), the ARIMA model performed better than ETS.
+
+We will plot the forecast against the real numbers.
+
+```{r}
+full_fc %>%
+  autoplot(tail(real, 12 * 10), level = 80, alpha = 0.6) +
+  labs(
+    title = "2 Year forecasts vs actual for the Queensland clothing industry turnover",
+    y = "Turnover ($M)"
+  )
+```
+
+Both models perform very well versus the real data by following the real numbers very closely from the start of 2019, through the peak at the end of 2019, and onward until the start of the COVID lockdown around March 2020, where the forecasts revert to the pattern from previous years but the real numbers take a nosedive. Once the turnover recovers towards mid-2020, the forecasts from both models perform well once again, however the ARIMA forecasts seem to perform better as they are closer to the real numbers all the way till the end of the data, echoing the conclusion from the accuracy measures that the ARIMA model is the better of the two models.
+
+# Benefits and limitations
+
+Both models perform very well with the data as both models match the real data very closely in 2019 and all the way up to the onset of COVID. Both models capture the seasonality very well. Another benefit is that the real data is in the middle of the prediction intervals for both models.
+
+To get a better idea of the behavior of the models further into the future, 10-year forecasts generated by the models will be plotted.
+
+```{r}
+full_fit %>%
+  forecast(h = "10 years") %>%
+  autoplot(myseries, level = 80, alpha = 0.6) +
+  labs(
+    title = "10 Year forecasts for the Queensland clothing industry turnover",
+    y = "Turnover ($M)"
+  )
+```
+
+From the plot we can see that as we go further into the future, the ARIMA model forecasts result in an increasing trend and an increase in the magnitude of the seasonality which, judging from the past 10 years, may be incorrect as the previous years showed more consistency. Furthermore, the prediction intervals become very wide over time. On the other hand, the ETS shows a more stable seasonality and level, which is more consistent with the previous 10 years as compared with the ARIMA forecasts, the prediction intervals are also much smaller. Therefore, it seems that the ETS model is the better candidate for the longer term.
