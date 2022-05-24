@@ -1,6 +1,6 @@
 ---
 title: "Retail Project"
-author: "Ibrahim Al-Hindi - 24112488"
+author: "Ibrahim Al-Hindi"
 date: '2022-05-20'
 output: html_document
 ---
